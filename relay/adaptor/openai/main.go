@@ -26,6 +26,7 @@ const (
 
 func StreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*model.ErrorWithStatusCode, string, *model.Usage) {
 	responseText := ""
+	reasoningText := ""
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Split(bufio.ScanLines)
 	var usage *model.Usage
@@ -62,6 +63,7 @@ func StreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*model.E
 			render.StringData(c, data)
 			for _, choice := range streamResponse.Choices {
 				responseText += conv.AsString(choice.Delta.Content)
+				reasoningText += conv.AsString(choice.Delta.ReasoningContent)
 			}
 			if streamResponse.Usage != nil {
 				usage = streamResponse.Usage
@@ -79,6 +81,11 @@ func StreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*model.E
 			}
 		}
 	}
+	if reasoningText != "" {
+		c.Set("reasoning_content", reasoningText)
+	}
+	logger.Infof(c.Request.Context(), "[relay] API stream response done: reasoning_content=%d chars, content=%d chars\nreasoning_content:\n%s\ncontent:\n%s",
+		len(reasoningText), len(responseText), reasoningText, responseText)
 
 	if err := scanner.Err(); err != nil {
 		logger.SysError("error reading stream: " + err.Error())
@@ -106,6 +113,7 @@ func Handler(c *gin.Context, resp *http.Response, promptTokens int, modelName st
 	if err != nil {
 		return ErrorWrapper(err, "close_response_body_failed", http.StatusInternalServerError), nil
 	}
+	logger.Infof(c.Request.Context(), "[relay] API response body:\n%s", string(responseBody))
 	err = json.Unmarshal(responseBody, &textResponse)
 	if err != nil {
 		return ErrorWrapper(err, "unmarshal_response_body_failed", http.StatusInternalServerError), nil
@@ -115,6 +123,13 @@ func Handler(c *gin.Context, resp *http.Response, promptTokens int, modelName st
 			Error:      textResponse.Error,
 			StatusCode: resp.StatusCode,
 		}, nil
+	}
+	// Collect reasoning_content from the first non-empty choice, if present.
+	for _, choice := range textResponse.Choices {
+		if rc := conv.AsString(choice.Message.ReasoningContent); rc != "" {
+			c.Set("reasoning_content", rc)
+			break
+		}
 	}
 	// Reset response body
 	resp.Body = io.NopCloser(bytes.NewBuffer(responseBody))
