@@ -1,0 +1,1 @@
+docker build -t one-api:latest .
